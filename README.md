@@ -3,7 +3,9 @@
 A Python client for the Stormshield Network Security appliance SSL API.
 
 Requires **Python 3.10 or later** and **urllib3 2.x**.
-Upgrading from 1.x? See [MIGRATION.md](MIGRATION.md).
+
+* What changed, and why: [CHANGELOG.md](CHANGELOG.md)
+* Upgrading from 1.x: [MIGRATION.md](MIGRATION.md)
 
 ## Install
 
