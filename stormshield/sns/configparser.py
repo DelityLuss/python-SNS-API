@@ -1,78 +1,83 @@
-#!/usr/bin/python
-
 """
 stormshield.sns.configparser
 
-This module handles SNS API responses and extract section/token/values
+This module handles SNS API responses and extracts section/token/values
 in ini/section format.
 """
 
-import sys
-import re
-from shlex import shlex
-from requests.structures import CaseInsensitiveDict
+from __future__ import annotations
+
 import logging
+import re
+from typing import Any
+
+from requests.structures import CaseInsensitiveDict
 
 logger = logging.getLogger(__name__)
 
-def unquote(value):
-    """ remove quotes if needed """
+__all__ = ["ConfigParser", "serialize", "unquote"]
+
+
+def unquote(value: Any) -> Any:
+    """Remove the surrounding double quotes of ``value`` if present."""
+
     if isinstance(value, str) and len(value) > 1 and value[0] == '"' and value[-1] == '"':
         return value[1:-1]
     return value
 
-def serialize(data):
-    if type(data) is CaseInsensitiveDict:
-        res = {}
-        for (k, v) in data.items():
-            res[k] = serialize(v)
-        return res
-    elif type(data) is list:
-        res = []
-        for v in data:
-            res.append(serialize(v))
-        return res
-    else:
-        return data
+
+def serialize(data: Any) -> Any:
+    """Recursively convert :class:`CaseInsensitiveDict` into plain dicts."""
+
+    if isinstance(data, CaseInsensitiveDict):
+        return {k: serialize(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [serialize(v) for v in data]
+    return data
 
 
 class ConfigParser:
-    """ A class to parse section format from SNS API responses """
+    """A class to parse section format from SNS API responses."""
 
     SERVERD_HEAD_RE = re.compile(r'^\d{3} code=.* msg=.* format="(.*?)"')
-    SERVERD_TAIL_RE = re.compile(r'^\d{3} code=.*? msg=.*?')
-    SECTION_RE = re.compile(r'^\s*\[\s*(.+?)\s*\]\s*$')
-    EMPTY_RE = re.compile(r'^\s*$')
-    TOKEN_VALUE_RE = re.compile(r'^(.*?)=(.*)$')
+    SERVERD_TAIL_RE = re.compile(r"^\d{3} code=.*? msg=.*?")
+    SECTION_RE = re.compile(r"^\s*\[\s*(.+?)\s*\]\s*$")
+    EMPTY_RE = re.compile(r"^\s*$")
 
-    def __init__(self, text):
-        """ load a section from text """
+    #: ``token=value`` pairs, where a value is either double quoted or
+    #: runs up to the next whitespace. Replaces the per-line :mod:`shlex`
+    #: lexer, which needed a hand-maintained ``wordchars`` allow-list.
+    _PAIR_RE = re.compile(r'(?:^|\s)(?P<token>[^\s="]+)=(?P<value>"[^"]*"|\S*)')
 
-        self.data = CaseInsensitiveDict()
-        self.format = None
+    def __init__(self, text: str | None) -> None:
+        """Load a section from text."""
 
-        lines = text.splitlines()
+        self.data: Any = CaseInsensitiveDict()
+        self.format: str | None = None
+
+        lines = (text or "").splitlines()
+        if not lines:
+            return
 
         # strip serverd headers if needed
         match = self.SERVERD_HEAD_RE.match(lines[0])
         if match:
             del lines[0]
             self.format = match.group(1)
-        if self.SERVERD_TAIL_RE.match(lines[-1]):
+        if lines and self.SERVERD_TAIL_RE.match(lines[-1]):
             del lines[-1]
 
         text = "\n".join(lines)
 
-        if self.format == 'raw' or self.format == 'xml':
+        if self.format in ("raw", "xml"):
             # plain data, no parsing
             self.data = text
             return
 
-        section = "Result" # default section
-        for line in text.splitlines():
-
+        section = "Result"  # default section
+        for line in lines:
             # comment
-            if line.startswith('#'):
+            if line.startswith("#"):
                 continue
 
             # empty lines
@@ -83,72 +88,75 @@ class ConfigParser:
             match = self.SECTION_RE.match(line)
             if match:
                 section = match.group(1)
-                if self.format == 'section':
-                    self.data[section] = CaseInsensitiveDict()
-                else:
-                    self.data[section] = []
+                self.data[section] = CaseInsensitiveDict() if self.format == "section" else []
                 continue
 
             if self.format == "list":
-                self.data[section].append(line)
+                self.data.setdefault(section, []).append(line)
             elif self.format == "section_line":
-                # fix encoding for python2
-                if sys.version_info[0] < 3:
-                    line = line.encode('utf-8')
-                # parse token=value token2=value2
-                lexer = shlex(line, posix=True)
-                lexer.wordchars += "=.-*:,/@'()"
-                lexer.quotes = '"'
-                parsed = {}
-                try:
-                    for word in lexer:
-                        # ignore anything else than token=value
-                        if '=' in word:
-                            token, value = word.split("=", 1)
-                            parsed[token] = value
-                except Exception as e:
-                    logger.warning(f"Can't parse line: `{line}`, error: {str(e)}")
-                self.data[section].append(parsed)
+                self.data.setdefault(section, []).append(self._parse_pairs(line))
             else:
                 # section
-                (token, value) = line.split("=", 1)
+                token, sep, value = line.partition("=")
+                if not sep:
+                    logger.warning("Can't parse line: `%s`, error: no '=' separator", line)
+                    continue
+                if section not in self.data:
+                    self.data[section] = CaseInsensitiveDict()
                 self.data[section][token] = unquote(value)
 
+    @classmethod
+    def from_data(cls, fmt: str | None, data: Any) -> ConfigParser:
+        """Build a parser around already decoded data, skipping any text parsing.
 
-    def get(self, section, token=None, line=None, default=None):
-        """ get the value of a token or a plain line from the current section """
+        Used by :class:`~stormshield.sns.sslclient.Response`, which decodes the
+        API answer straight from its XML tree.
+        """
+
+        parser = cls.__new__(cls)
+        parser.format = fmt
+        parser.data = data
+        return parser
+
+    @classmethod
+    def _parse_pairs(cls, line: str) -> dict[str, str]:
+        """Parse a ``token=value token2="value 2"`` line into a dict."""
+
+        # An odd number of quotes means the appliance sent a truncated line;
+        # skip it whole rather than returning half-parsed values.
+        if line.count('"') % 2:
+            logger.warning("Can't parse line: `%s`, error: unbalanced quotes", line)
+            return {}
+
+        return {m.group("token"): unquote(m.group("value")) for m in cls._PAIR_RE.finditer(line)}
+
+    def get(
+        self,
+        section: str,
+        token: str | None = None,
+        line: int | None = None,
+        default: Any = None,
+    ) -> Any:
+        """Get the value of a token or a plain line from the given section."""
 
         if section not in self.data:
-            value = default
+            return default
 
-        elif token is not None:
+        if token is not None:
             # token/value mode
-
             if token not in self.data[section]:
-                value = default
-            else:
-                value = unquote(self.data[section][token])
-        elif line is None:
-            # return all tokens/lines form section
-            if self.format == "section":
-                value = self.data[section]
-            elif section not in self.data:
-                value = []
-            else:
-                value = self.data[section]
-        else:
-            if line < 1:
-                value = default
-            elif section not in self.data:
-                value = default
-            elif len(self.data[section]) < line:
-                value = default
-            else:
-                value = self.data[section][line-1]
+                return default
+            return unquote(self.data[section][token])
 
-        return value
+        if line is None:
+            # return all tokens/lines from the section
+            return self.data[section]
 
-    def serialize_data(self):
-        """ return serializable output parsed data """
+        if line < 1 or len(self.data[section]) < line:
+            return default
+        return self.data[section][line - 1]
+
+    def serialize_data(self) -> Any:
+        """Return the parsed data as plain serializable structures."""
 
         return serialize(self.data)

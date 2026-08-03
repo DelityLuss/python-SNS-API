@@ -4,8 +4,8 @@
 Script to create a VLAN interface on a SNS appliance
 """
 
-import sys
 import getpass
+import sys
 
 from stormshield.sns.sslclient import SSLClient
 
@@ -39,7 +39,7 @@ client = SSLClient(
 def error(msg):
     global client
 
-    print("ERROR: {}".format(msg))
+    print(f"ERROR: {msg}")
     client.disconnect()
     sys.exit(1)
 
@@ -48,7 +48,7 @@ def command(cmd):
 
     response = client.send_command(cmd)
     if not response:
-        error("command failed:\n{}".format(response.output))
+        error(f"command failed:\n{response.output}")
 
     return response
 
@@ -60,23 +60,23 @@ if len(response.data.keys()) == 0:
 else:
     vlanid = -1
     for i in range(MAXVLAN):
-        if "vlan{}".format(i) not in response.data:
+        if f"vlan{i}" not in response.data:
             vlanid = i
             break
     if vlanid == -1:
         error("all available VLAN already created")
 
 
-response = command("CONFIG NETWORK INTERFACE CREATE state=1 protected=0 mtu=1500 physical={} name={} tag={} priority=0 keepVlanPriority=1 maxThroughput=0 ifname=vlan{} address={} mask={}".format(vlanphy, vlanname, vlantag, vlanid, vlanaddr, vlanmask))
+response = command(f"CONFIG NETWORK INTERFACE CREATE state=1 protected=0 mtu=1500 physical={vlanphy} name={vlanname} tag={vlantag} priority=0 keepVlanPriority=1 maxThroughput=0 ifname=vlan{vlanid} address={vlanaddr} mask={vlanmask}")
 if response.code:
-    print("VLAN vlan{} created".format(vlanid))
+    print(f"VLAN vlan{vlanid} created")
 else:
-    error("VLAN vlan{} can't be created:\n{}".format(vlanid, response.output))
+    error(f"VLAN vlan{vlanid} can't be created:\n{response.output}")
 
 response = command("CONFIG NETWORK ACTIVATE")
 if response.code:
     print("Configuration activated")
 else:
-    error("Can't activate network:\n{}".format(response.output))
+    error(f"Can't activate network:\n{response.output}")
 
 client.disconnect()

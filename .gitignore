@@ -2,7 +2,19 @@
 dist
 build
 .eggs
-stormshield.sns.sslclient.egg-info
+*.egg-info
 __pycache__
 *.pyc
 .tox
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# local credentials - never commit
+.env
+.env.*
+!.env.example
+.venv
+venv

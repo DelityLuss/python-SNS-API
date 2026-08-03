@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stormshield.sns.sslclient"
+dynamic = ["version"]
+description = "SSL API client for Stormshield Network Security appliances"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENCE"]
+authors = [{ name = "Remi Pauchet", email = "remi.pauchet@stormshield.eu" }]
+keywords = ["stormshield", "sns", "firewall", "utm", "nsrpc"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Typing :: Typed",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "requests[socks]>=2.31",
+    "requests_toolbelt>=1.0",
+    "defusedxml>=0.7",
+    "urllib3>=2.0",
+]
+
+# pygments/colorlog/readline are only needed by the `snscli` console script,
+# not by the library itself.
+[project.optional-dependencies]
+cli = [
+    "pygments>=2.15",
+    "colorlog>=6.7",
+    "pyreadline3>=3.4; platform_system == 'Windows'",
+]
+test = ["pytest>=7.4", "pytest-cov>=4.1"]
+dev = ["ruff>=0.6", "mypy>=1.11", "types-defusedxml", "types-requests"]
+
+[project.urls]
+Homepage = "https://github.com/stormshield/python-SNS-API"
+Source = "https://github.com/stormshield/python-SNS-API"
+Issues = "https://github.com/stormshield/python-SNS-API/issues"
+
+[project.scripts]
+snscli = "stormshield.sns.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "stormshield.sns.sslclient.__version__.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["stormshield*"]
+
+[tool.setuptools.package-data]
+"stormshield.sns" = ["bundle.ca", "cmd.complete", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:stormshield.*"]
+markers = ["live: needs a running SNS appliance (APPLIANCE/PASSWORD env vars)"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["stormshield"]
+ignore_missing_imports = true

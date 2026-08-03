@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<nws code="100" msg="OK"><serverd ret="101" code="00a01000" msg="Début"><data format="raw"><![CDATA[AUTH       : User authentication.
+CHPWD      : Indicate if the password must be updated.
+CONFIG     : Firewall configuration functions.
+HA         : HA functions
+HELP       : Display the available commands.
+LIST       : Display the list of connected users, show user rights (Level) and rights for current session (SessionLevel).
+LOG        : Log related functions.Everywhere a timezone is needed, if not specified the command is treated with firewall timezone setting.
+MODIFY     : Get / loose the modify or the mon_write right.
+MONITOR    : Monitor related functions
+NOP        : Do nothing but avoid disconnection from server.
+PKI        : show or update the pki
+QUIT       : Log off.
+REPORT     : Handling of reports
+SYSTEM     : System commands
+USER       : User related functions.
+VERSION    : Display server version.
+]]></data></serverd><serverd ret="100" code="00a00100" msg="Ok"></serverd></nws>

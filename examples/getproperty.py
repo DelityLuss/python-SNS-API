@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 """
 This example show how to connect to a SNS appliance, send a command
@@ -8,32 +8,35 @@ appliance model and firmware version.
 
 import getpass
 
-from stormshield.sns.sslclient import SSLClient
+from stormshield.sns.sslclient import SNSError, SSLClient
 
 # user input
 host = input("Appliance ip address: ")
 user = input("User:")
 password = getpass.getpass("Password: ")
 
-# connect to the appliance
-client = SSLClient(
-    host=host, port=443,
-    user=user, password=password,
-    sslverifyhost=False)
+try:
+    # the context manager disconnects even if a command raises
+    with SSLClient(
+        host=host, port=443,
+        user=user, password=password,
+        sslverifyhost=False,
+    ) as client:
 
-# request appliance properties
-response = client.send_command("SYSTEM PROPERTY")
+        # request appliance properties
+        response = client.send_command("SYSTEM PROPERTY")
 
-if response:
-    #get value using parser get method
-    model = response.parser.get(section='Result', token='Model')
-    # get value with direct access to data
-    version = response.data['Result']['Version']
+        if response:
+            # get value using the get() shortcut, which accepts a default
+            model = response.get(section='Result', token='Model')
+            # get value with direct access to data
+            version = response.data['Result']['Version']
 
-    print("")
-    print("Model: {}".format(model))
-    print("Firmware version: {}".format(version))
-else:
-    print("Command failed: {}".format(response.output))
+            print("")
+            print(f"Model: {model}")
+            print(f"Firmware version: {version}")
+        else:
+            print(f"Command failed: {response.output}")
 
-client.disconnect()
+except SNSError as exception:
+    raise SystemExit(f"Connection failed: {exception}") from exception

@@ -1,10 +1,10 @@
 #!/usr/bin/python
-# -*- coding: utf-8 -*-
 
-import unittest
 import json
+import unittest
 
 from stormshield.sns.configparser import ConfigParser
+
 
 class TestConfigParser(unittest.TestCase):
 

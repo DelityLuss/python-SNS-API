@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<nws code="100" msg="OK"><serverd ret="101" code="00a01000" msg="Début"><data format="xml"><filters total_lines="5">
+<separator nb_elements="2" first_ruleid="1" position="1" color="c0c0c0" comment="Remote Management: Go to System - Configuration to setup the web administration application access" collapse="0" />
+<filter position="2" index="1" type="local_filter_slot" action="pass" status="active" comment="Admin from everywhere"><noconnlog disk="0" syslog="0" ipfix="0" /><from><target value="any" type="any" /></from><to><port value="https" type="single" /><port value="ssh" type="single" /><target value="firewall_all" type="group" /></to></filter>
+<filter position="3" index="2" type="local_filter_slot" action="pass" status="active" ipproto="icmp" proto="none" icmp_type="8" icmp_code="0" comment="Allow Ping from everywhere"><noconnlog disk="0" syslog="0" ipfix="0" /><from><target value="any" type="any" /></from><to><target value="firewall_all" type="group" /></to></filter>
+<separator nb_elements="1" first_ruleid="3" position="4" color="c0c0c0" comment="Default policy" collapse="0" />
+<filter position="5" index="3" type="local_filter_slot" action="block" status="active" comment="Block all"><noconnlog disk="0" syslog="0" ipfix="0" /><from><target value="any" type="any" /></from><to><target value="any" type="any" /></to></filter>
+</filters>
+</data></serverd><serverd ret="100" code="00a00100" msg="Ok"></serverd></nws>

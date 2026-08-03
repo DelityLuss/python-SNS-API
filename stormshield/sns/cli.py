@@ -1,140 +1,196 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
-""" cli to connect to Stormshield Network Security appliances"""
+"""cli to connect to Stormshield Network Security appliances"""
 
-from __future__ import unicode_literals
-import sys
-import os
-import re
+from __future__ import annotations
+
+import argparse
+import atexit
+import getpass
 import logging
 import logging.handlers
-import readline
-import getpass
-import atexit
-import defusedxml.minidom
-import argparse
+import os
 import platform
-from pygments import highlight
-from pygments.lexers import XmlLexer
-from pygments.formatters import TerminalFormatter
-from colorlog import LevelFormatter
+import re
+import sys
+from typing import Any
 
-from stormshield.sns.sslclient import SSLClient, ServerError, TOTPNeededError
+import defusedxml.minidom
+
+from stormshield.sns.sslclient import ServerError, SSLClient, TOTPNeededError
 from stormshield.sns.sslclient.__version__ import __version__ as libversion
-from urllib3 import __version__ as urllib3version
-from requests import __version__ as requestsversion
 
-# define missing exception for python2
-try:
-    FileNotFoundError
-except NameError:
-    FileNotFoundError = IOError
+try:  # optional, only needed for history and completion
+    import readline
+except ImportError:  # pragma: no cover - Windows without pyreadline3
+    readline = None  # type: ignore[assignment]
 
-OUTPUT_LEVELV_NUM = 60 # log command response
-COMMAND_LEVELV_NUM = 59 # log command input
-FORMATTER = LevelFormatter(
-    fmt={
-        'DEBUG':    "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
-        'INFO':     "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
-        'WARNING':  "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
-        'ERROR':    "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
-        'CRITICAL': "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
-        'OUTPUT':   "%(message)s",
-        'COMMAND':  "%(message)s"
-    },
-    datefmt=None,
-    reset=True,
-    log_colors={
-        'DEBUG': 'green',
-        'INFO': 'cyan',
-        'WARNING': 'yellow',
-        'ERROR': 'red',
-        'CRITICAL': 'red,bg_white'
-    },
-    secondary_log_colors={},
-    style='%'
+CLI_EXTRA_HINT = (
+    "snscli needs its optional dependencies: pip install 'stormshield.sns.sslclient[cli]'"
 )
 
-class CommandFilter(logging.Filter):
-    def filter(self, record):
-        if record.levelname == 'COMMAND':
-            return False
-        return True
+OUTPUT_LEVELV_NUM = 60  # log command response
+COMMAND_LEVELV_NUM = 59  # log command input
 
-EMPTY_RE = re.compile(r'^\s*$')
+EMPTY_RE = re.compile(r"^\s*$")
+#: matches the urllib3 error naming the certificate CN we failed to match
+CN_MISMATCH_RE = re.compile(r"doesn't match '(.*)'")
+
+#: environment variable used to pass the password without exposing it in `ps`
+PASSWORD_ENV = "SNSCLI_PASSWORD"
+
+
+def _build_formatter() -> Any:
+    """Build the colored log formatter, failing with a clear message."""
+
+    try:
+        from colorlog import LevelFormatter
+    except ImportError as exc:  # pragma: no cover
+        raise SystemExit(CLI_EXTRA_HINT) from exc
+
+    return LevelFormatter(
+        fmt={
+            "DEBUG": "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
+            "INFO": "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
+            "WARNING": "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
+            "ERROR": "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
+            "CRITICAL": "%(log_color)s%(levelname)-8s%(reset)s %(message)s",
+            "OUTPUT": "%(message)s",
+            "COMMAND": "%(message)s",
+        },
+        datefmt=None,
+        reset=True,
+        log_colors={
+            "DEBUG": "green",
+            "INFO": "cyan",
+            "WARNING": "yellow",
+            "ERROR": "red",
+            "CRITICAL": "red,bg_white",
+        },
+        secondary_log_colors={},
+        style="%",
+    )
+
+
+def _highlight_xml(xml: str) -> str:
+    """Pretty print and colorize an XML answer."""
+
+    try:
+        from pygments import highlight
+        from pygments.formatters import TerminalFormatter
+        from pygments.lexers import XmlLexer
+    except ImportError as exc:  # pragma: no cover
+        raise SystemExit(CLI_EXTRA_HINT) from exc
+
+    return highlight(defusedxml.minidom.parseString(xml).toprettyxml(), XmlLexer(), TerminalFormatter())
+
+
+class CommandFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelname != "COMMAND"
+
 
 def make_completer():
-    """ load completer for readline """
-    vocabulary = []
-    with open(SSLClient.get_completer(), "r") as completelist:
-        for line in completelist:
-            vocabulary.append(line.replace('.', ' ').strip('\n'))
+    """Load completer for readline"""
+
+    with open(SSLClient.get_completer()) as completelist:
+        vocabulary = [line.replace(".", " ").strip("\n") for line in completelist]
 
     def custom_complete(text, state):
         results = [x for x in vocabulary if x.startswith(text)] + [None]
         return results[state]
+
     return custom_complete
 
-def main():
 
-    # parse command line
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command line parser.
 
-    parser = argparse.ArgumentParser(conflict_handler="resolve")
+    ``add_help=False`` frees ``-h`` for ``--host``; without it argparse would
+    need ``conflict_handler="resolve"``, which silently swallows duplicated
+    short options instead of reporting them.
+    """
+
+    parser = argparse.ArgumentParser(prog="snscli", add_help=False)
+    parser.add_argument("--help", action="help", help="Show this help message and exit")
 
     group = parser.add_argument_group("Connection parameters")
-    group.add_argument("-h", "--host",  help="Remote UTM",    default=None)
-    group.add_argument("-i", "--ip",    help="Remote UTM ip", default=None)
-    group.add_argument("-P", "--port",  help="Remote port",   default=443, type=int)
-    group.add_argument("--proxy",       help="Proxy URL (scheme://user:password@host:port)", default=None)
-    group.add_argument("-t", "--timeout",  help="Connection timeout in seconds", default=-1, type=int)
+    group.add_argument("-h", "--host", help="Remote UTM", default=None)
+    group.add_argument("-i", "--ip", help="Remote UTM ip", default=None)
+    group.add_argument("-P", "--port", help="Remote port", default=443, type=int)
+    group.add_argument("--proxy", help="Proxy URL (scheme://user:password@host:port)", default=None)
+    group.add_argument(
+        "--timeout",
+        help="Connection timeout in seconds (default: %(default)s, 0 to wait forever)",
+        default=SSLClient.DEFAULT_TIMEOUT,
+        type=float,
+    )
+    group.add_argument(
+        "--retries", help="Retries on connection failure (default: %(default)s)", default=2, type=int
+    )
 
     group = parser.add_argument_group("Authentication parameters")
-    group.add_argument("-u", "--user",     help="User name",                    default="admin")
-    group.add_argument("-p", "--password", help="Password",                     default=None)
-    group.add_argument("-t", "--totp",     help="Time-based one time password", default=None)
-    group.add_argument("-U", "--usercert", help="User certificate file",        default=None)
+    group.add_argument("-u", "--user", help="User name", default="admin")
+    group.add_argument(
+        "-p",
+        "--password",
+        help=f"Password (prefer the {PASSWORD_ENV} environment variable)",
+        default=None,
+    )
+    group.add_argument("-t", "--totp", help="Time-based one time password", default=None)
+    group.add_argument("-U", "--usercert", help="User certificate file", default=None)
 
     group = parser.add_argument_group("SSL parameters")
-    group.add_argument("-C", "--cabundle",         help="CA bundle file",                     default=None)
-    group.add_argument("--sslverifypeer",          help="Strict SSL CA check",                default=True, action="store_true")
-    group.add_argument("-k", "--no-sslverifypeer", help="Disable strict SSL CA check",        default=True, action="store_false", dest="sslverifypeer")
-    group.add_argument("--sslverifyhost",          help="Strict SSL host name check",         default=True, action="store_true")
-    group.add_argument("-K", "--no-sslverifyhost", help="Disable strict SSL host name check", default=True, action="store_false", dest="sslverifyhost")
+    group.add_argument("-C", "--cabundle", help="CA bundle file", default=None)
+    group.add_argument("--sslverifypeer", help="Strict SSL CA check", default=True, action="store_true")
+    group.add_argument(
+        "-k",
+        "--no-sslverifypeer",
+        help="Disable strict SSL CA check",
+        action="store_false",
+        dest="sslverifypeer",
+    )
+    group.add_argument(
+        "--sslverifyhost", help="Strict SSL host name check", default=True, action="store_true"
+    )
+    group.add_argument(
+        "-K",
+        "--no-sslverifyhost",
+        help="Disable strict SSL host name check",
+        action="store_false",
+        dest="sslverifyhost",
+    )
 
     group = parser.add_argument_group("Protocol parameters")
-    group.add_argument("-c", "--credentials",  help="Privilege list",          default=None)
-    group.add_argument("-s", "--script",       help="Command script",          default=None)
-    group.add_argument("-o", "--outputformat", help="Output format (ini|xml)", default="ini")
+    group.add_argument("-c", "--credentials", help="Privilege list", default=None)
+    group.add_argument("-s", "--script", help="Command script", default=None)
+    group.add_argument(
+        "-o", "--outputformat", help="Output format", default="ini", choices=["ini", "xml"]
+    )
 
     parser.add_argument("--version", help="Library version", default=False, action="store_true")
 
     group = parser.add_argument_group("Logging parameters")
-    exclusive  = group.add_mutually_exclusive_group()
-    exclusive.add_argument("-v", "--verbose", help="Increase logging output", default=False, action="store_true")
-    exclusive.add_argument("-q", "--quiet",   help="Decrease logging output", default=False, action="store_true")
-    group.add_argument("--loglvl",  help="Set explicit log level",      default=None,  choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
-    group.add_argument("--logfile", help='Output log messages to file', default=None)
+    exclusive = group.add_mutually_exclusive_group()
+    exclusive.add_argument(
+        "-v", "--verbose", help="Increase logging output", default=False, action="store_true"
+    )
+    exclusive.add_argument(
+        "-q", "--quiet", help="Decrease logging output", default=False, action="store_true"
+    )
+    group.add_argument(
+        "--loglvl",
+        help="Set explicit log level",
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    )
+    group.add_argument("--logfile", help="Output log messages to file", default=None)
 
-    args = parser.parse_args()
+    return parser
 
-    host = args.host
-    ip = args.ip
-    usercert = args.usercert
-    cabundle = args.cabundle
-    password = args.password
-    totp = args.totp
-    port = args.port
-    proxy = args.proxy
-    timeout = args.timeout
-    user = args.user
-    sslverifypeer = args.sslverifypeer
-    sslverifyhost = args.sslverifyhost
-    credentials = args.credentials
-    script = args.script
-    outputformat = args.outputformat
-    version = args.version
 
-    # logging
+def setup_logging(args: argparse.Namespace) -> logging.Logger:
+    """Configure the root logger and the custom OUTPUT/COMMAND levels."""
 
     level = logging.INFO
     if args.loglvl is not None:
@@ -144,171 +200,122 @@ def main():
     elif args.quiet:
         level = logging.WARNING
 
-    # add custom level
     logging.addLevelName(OUTPUT_LEVELV_NUM, "OUTPUT")
     logging.addLevelName(COMMAND_LEVELV_NUM, "COMMAND")
 
     def logoutput(self, message, *args, **kwargs):
-        # Yes, logger takes its '*args' as 'args'.
         self._log(OUTPUT_LEVELV_NUM, message, args, **kwargs)
+
     def logcommand(self, message, *args, **kwargs):
-        # Yes, logger takes its '*args' as 'args'.
         self._log(COMMAND_LEVELV_NUM, message, args, **kwargs)
 
     logging.Logger.output = logoutput
     logging.Logger.command = logcommand
 
-    # logger
     logger = logging.getLogger()
-    for handler in logger.handlers:
+    for handler in list(logger.handlers):
         logger.removeHandler(handler)
     logger.setLevel(level)
 
-    # attach handlers
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(CommandFilter())
+    handler.setFormatter(_build_formatter())
     logger.addHandler(handler)
+
     if args.logfile is not None:
-        if platform.system() != 'Windows':
-            handler = logging.handlers.WatchedFileHandler(args.logfile)
+        if platform.system() != "Windows":
+            filehandler = logging.handlers.WatchedFileHandler(args.logfile)
         else:
-            handler = logging.FileHandler(args.logfile)
-        logger.addHandler(handler)
+            filehandler = logging.FileHandler(args.logfile)
+        logger.addHandler(filehandler)
 
-    for handler in logger.handlers:
-        if handler.__class__ == logging.StreamHandler:
-            handler.setFormatter(FORMATTER)
+    return logger
 
-    if version:
-        logging.info("snscli - stormshield.sns.sslclient version {}".format(libversion))
-        logging.info(" urllib3 {}".format(urllib3version))
-        logging.info(" requests {}".format(requestsversion))
-        sys.exit(0)
 
-    if script is not None:
+def print_response(logger: logging.Logger, response, outputformat: str) -> None:
+    if outputformat == "xml":
+        logger.output(_highlight_xml(response.xml))
+    else:
+        logger.output(response.output)
+
+
+def run_script(logger: logging.Logger, client: SSLClient, path: str, outputformat: str) -> int:
+    """Run a command script, returning the process exit code."""
+
+    try:
+        with open(path) as script:
+            commands = script.read().splitlines()
+    except OSError as exception:
+        logging.error("Can't open script file - %s", exception)
+        return 1
+
+    for cmd in commands:
+        logger.output(cmd)
+        if cmd.startswith("#") or EMPTY_RE.match(cmd):
+            continue
         try:
-            script = open(script, 'r')
-        except Exception as exception:
-            logging.error("Can't open script file - %s", str(exception))
-            sys.exit(1)
-
-    if outputformat not in ['ini', 'xml']:
-        logging.error("Unknown output format")
-        sys.exit(1)
-
-    if host is None:
-        logging.error("No host provided")
-        sys.exit(1)
-
-    if password is None and usercert is None:
-        password = getpass.getpass()
-
-    if timeout == -1:
-        timeout = None
-
-    # first try without totp, if needed ask for totp
-    for i in range(0, 2):
-        try:
-            client = SSLClient(
-                host=host, ip=ip, port=port, user=user, password=password, totp=totp,
-                sslverifypeer=sslverifypeer, sslverifyhost=sslverifyhost,
-                credentials=credentials, proxy=proxy, timeout=timeout,
-                usercert=usercert, cabundle=cabundle, autoconnect=False)
+            response = client.send_command(cmd)
         except Exception as exception:
             logging.error(str(exception))
-            sys.exit(1)
+            return 1
+        print_response(logger, response, outputformat)
 
-        try:
-            client.connect()
-        except TOTPNeededError as exception:
-            if i == 0 and totp is None:
-                logging.warning("Second factor authentication is required.")
-                totp = getpass.getpass("Totp:")
-                continue
-            else:
-                logging.error(str(exception))
-                sys.exit(1)
-        except Exception as exception:
-            search = re.search(r'doesn\'t match \'(.*)\'', str(exception))
-            if search:
-                logging.error(("Appliance name can't be verified, to force connection "
-                               "use \"--host %s --ip %s\" or \"--no-sslverifyhost|-K\" "
-                               "options"), search.group(1), ip if ip is not None else host)
-            else:
-                logging.error(str(exception))
-            sys.exit(1)
-        else:
-            break
+    return 0
 
-    # disconnect gracefuly at exit
-    atexit.register(client.disconnect)
 
-    if script is not None:
-        for cmd in script.readlines():
-            cmd = cmd.strip('\r\n')
-            logger.output(cmd)
-            if cmd.startswith('#'):
-                continue
-            if EMPTY_RE.match(cmd):
-                continue
-            try:
-                response = client.send_command(cmd)
-            except Exception as exception:
-                logging.error(str(exception))
-                sys.exit(1)
-            if outputformat == 'xml':
-                logger.output(highlight(defusedxml.minidom.parseString(response.xml).toprettyxml(),
-                                XmlLexer(), TerminalFormatter()))
-            else:
-                logger.output(response.output)
-        sys.exit(0)
+def setup_readline() -> None:
+    """Enable history and completion when readline is available."""
 
-    # Start cli
+    if readline is None:
+        return
 
-    # load history
     histfile = os.path.join(os.path.expanduser("~"), ".sslclient_history")
     try:
         readline.read_history_file(histfile)
         readline.set_history_length(1000)
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         pass
 
-    def save_history(histfile):
+    def save_history():
         try:
             readline.write_history_file(histfile)
-        except:
+        except OSError:
             logging.warning("Can't write history")
 
-    atexit.register(save_history, histfile)
+    atexit.register(save_history)
 
-    # load auto-complete
-    readline.parse_and_bind('tab: complete')
-    readline.set_completer_delims('')
+    readline.parse_and_bind("tab: complete")
+    readline.set_completer_delims("")
     readline.set_completer(make_completer())
+
+
+def interactive(logger: logging.Logger, client: SSLClient, outputformat: str) -> int:
+    """Run the interactive prompt, returning the process exit code."""
+
+    setup_readline()
 
     while True:
         try:
             cmd = input("> ")
-            logger.command(cmd)
         except EOFError:
-            break
+            return 0
+        logger.command(cmd)
 
         # skip comments
-        if cmd.startswith('#'):
+        if cmd.startswith("#"):
             continue
 
         try:
             response = client.send_command(cmd)
         except ServerError as exception:
             # do not log error on QUIT
-            if "quit".startswith(cmd.lower()) \
-               and str(exception) == "Server disconnected":
-                sys.exit(0)
+            if "quit".startswith(cmd.lower()) and str(exception) == "Server disconnected":
+                return 0
             logging.error(str(exception))
-            sys.exit(1)
+            return 1
         except Exception as exception:
             logging.error(str(exception))
-            sys.exit(1)
+            return 1
 
         if response.ret == client.SRV_RET_DOWNLOAD:
             filename = input("File to save: ")
@@ -325,18 +332,100 @@ def main():
             except Exception as exception:
                 logging.error(str(exception))
         else:
-            if outputformat == 'xml':
-                logger.output(highlight(defusedxml.minidom.parseString(response.xml).toprettyxml(),
-                                XmlLexer(), TerminalFormatter()))
-            else:
-                logger.output(response.output)
+            print_response(logger, response, outputformat)
 
-# use correct input function with python2
-try:
-    input = raw_input
-except NameError:
-    pass
+
+def connect(args: argparse.Namespace, password: str | None) -> SSLClient:
+    """Connect to the appliance, prompting for a TOTP if the appliance asks for one."""
+
+    timeout = args.timeout if args.timeout else None
+    totp = args.totp
+
+    # first try without totp, if needed ask for totp
+    for attempt in range(2):
+        try:
+            client = SSLClient(
+                host=args.host,
+                ip=args.ip,
+                port=args.port,
+                user=args.user,
+                password=password,
+                totp=totp,
+                sslverifypeer=args.sslverifypeer,
+                sslverifyhost=args.sslverifyhost,
+                credentials=args.credentials,
+                proxy=args.proxy,
+                timeout=timeout,
+                retries=args.retries,
+                usercert=args.usercert,
+                cabundle=args.cabundle,
+                autoconnect=False,
+            )
+        except Exception as exception:
+            logging.error(str(exception))
+            raise SystemExit(1) from exception
+
+        try:
+            client.connect()
+        except TOTPNeededError as exception:
+            if attempt == 0 and totp is None:
+                logging.warning("Second factor authentication is required.")
+                totp = getpass.getpass("Totp:")
+                continue
+            logging.error(str(exception))
+            raise SystemExit(1) from exception
+        except Exception as exception:
+            search = CN_MISMATCH_RE.search(str(exception))
+            if search:
+                logging.error(
+                    (
+                        "Appliance name can't be verified, to force connection "
+                        'use "--host %s --ip %s" or "--no-sslverifyhost|-K" options'
+                    ),
+                    search.group(1),
+                    args.ip if args.ip is not None else args.host,
+                )
+            else:
+                logging.error(str(exception))
+            raise SystemExit(1) from exception
+        else:
+            return client
+
+    raise SystemExit(1)  # pragma: no cover
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    logger = setup_logging(args)
+
+    if args.version:
+        from requests import __version__ as requestsversion
+        from urllib3 import __version__ as urllib3version
+
+        logging.info("snscli - stormshield.sns.sslclient version %s", libversion)
+        logging.info(" urllib3 %s", urllib3version)
+        logging.info(" requests %s", requestsversion)
+        return 0
+
+    if args.host is None:
+        logging.error("No host provided")
+        return 1
+
+    password = args.password or os.environ.get(PASSWORD_ENV)
+    if password is None and args.usercert is None:
+        password = getpass.getpass()
+
+    client = connect(args, password)
+
+    # disconnect gracefully at exit
+    atexit.register(client.disconnect)
+
+    if args.script is not None:
+        return run_script(logger, client, args.script, args.outputformat)
+
+    return interactive(logger, client, args.outputformat)
+
 
 if __name__ == "__main__":
     # execute only if run as a script
-    main()
+    sys.exit(main())

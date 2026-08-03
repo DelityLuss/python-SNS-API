@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<nws code="100" msg="OK"><serverd ret="101" code="00a01000" msg="Début"><data format="list"><section title="Result"><line>network_internals</line><line>labo_networks</line></section></data></serverd><serverd ret="100" code="00a00100" msg="Ok"></serverd></nws>

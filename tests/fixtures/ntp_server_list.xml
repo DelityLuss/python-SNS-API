@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<nws code="100" msg="OK"><serverd ret="101" code="00a01000" msg="Début"><data format="section_line"><section title="Result"><line><key name="name" value="obj008"/><key name="keynum" value="none"/><key name="type" value="host"/></line><line><key name="name" value="obj009"/><key name="keynum" value="none"/><key name="type" value="host"/></line></section></data></serverd><serverd ret="100" code="00a00100" msg="Ok"></serverd></nws>
