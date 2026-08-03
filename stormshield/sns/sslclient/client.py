@@ -20,6 +20,7 @@ import defusedxml.ElementTree as ElementTree
 import requests
 import requests.compat
 import urllib3
+from requests.adapters import HTTPAdapter
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 from urllib3.util.retry import Retry
 
@@ -154,10 +155,8 @@ class SSLClient:
         self.user = user
         self.password = password
         self.totp = totp
-        self.host = host
         self.ip = ip
         self.port = port
-        self.cabundle = cabundle
         self.app = "sslclient"
         self.sslverifypeer = sslverifypeer
         self.sslverifyhost = sslverifyhost
@@ -183,9 +182,13 @@ class SSLClient:
             raise MissingAuth("User certificate not found")
         if cabundle is None:
             # use default cabundle
-            self.cabundle = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "bundle.ca"))
-        if not os.path.isfile(self.cabundle):
+            cabundle = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "bundle.ca"))
+        if not os.path.isfile(cabundle):
             raise MissingCABundle("Certificate authority bundle not found")
+
+        # assigned once validated, so both are known to be set from here on
+        self.host = host
+        self.cabundle = cabundle
 
         self.baseurl = f"https://{self._urlhost(self.host)}:{self.port}"
 
@@ -200,6 +203,10 @@ class SSLClient:
             total=retries,
             connect=retries,
             read=False,
+            # `other` covers the errors urllib3 classifies as neither connect
+            # nor read (TLS record errors, for one). Leaving it to `total`
+            # would replay a request that already reached the appliance.
+            other=0,
             status=0,
             redirect=0,
             backoff_factor=0.3,
@@ -214,14 +221,23 @@ class SSLClient:
         # the caller's, widening the set of accepted authorities
         cafile = self.cabundle if self.sslverifypeer else None
 
-        if not self.sslverifyhost:
-            self.session.mount(self.baseurl, SNSHTTPSAdapter(False, cafile=cafile, max_retries=retry))
-
         if self.ip is not None:
+            # connect to the ip, but keep checking the certificate against the
+            # appliance name the caller asked for
             self.baseurl = f"https://{self._urlhost(self.ip)}:{self.port}"
-            self.session.mount(
-                self.baseurl.lower(), SNSHTTPSAdapter(self.host, cafile=cafile, max_retries=retry)
-            )
+
+        adapter: HTTPAdapter
+        if not self.sslverifyhost:
+            adapter = SNSHTTPSAdapter(False, cafile=cafile, max_retries=retry)
+        elif self.ip is not None:
+            adapter = SNSHTTPSAdapter(self.host, cafile=cafile, max_retries=retry)
+        else:
+            adapter = HTTPAdapter(max_retries=retry)
+
+        # a single adapter, mounted on the url actually used: mounting one per
+        # option would let the last one win and silently drop the others,
+        # retries included
+        self.session.mount(self.baseurl.lower(), adapter)
 
         if self.usercert is not None:
             self.session.cert = self.usercert
@@ -290,6 +306,8 @@ class SSLClient:
         else:
             # password authentication
             logger.debug("Authentication with user/password")
+            if self.password is None:
+                raise MissingAuth("Password parameter must be provided")
             data = {
                 "uid": base64.b64encode(self.user.encode("utf-8")),
                 "pswd": base64.b64encode(self.password.encode("utf-8")),
@@ -323,12 +341,12 @@ class SSLClient:
             raise AuthenticationError("Authentication failed")
 
         # 2. Serverd session
-        data = {"app": self.app, "id": 0}
+        login: dict[str, Any] = {"app": self.app, "id": 0}
         if self.credentials is not None:
-            data["reqlevel"] = self.credentials
+            login["reqlevel"] = self.credentials
         request = self.session.post(
             self.baseurl + "/api/auth/login",
-            data=data,
+            data=login,
             headers=self.headers,
             **self.conn_options,
         )
@@ -345,9 +363,12 @@ class SSLClient:
         if ret != self.SSL_SERVERD_OK:
             raise ServerError(f"ERROR: {ret} {msg}")
 
-        self.sessionid = nws_node.find("sessionid").text
-        self.protocol = nws_node.find("protocol").text
-        self.sessionlevel = nws_node.find("sessionlevel").text
+        try:
+            self.sessionid = nws_node.find("sessionid").text
+            self.protocol = nws_node.find("protocol").text
+            self.sessionlevel = nws_node.find("sessionlevel").text
+        except AttributeError as exception:
+            raise ServerError("Malformed answer: incomplete serverd session") from exception
         self._connected = True
 
         logger.debug("Session ID: %s", self.sessionid)
@@ -464,17 +485,20 @@ class SSLClient:
         if data is None:
             raise ServerError("Malformed answer: missing download header")
 
-        if data.get("format") == "section":
-            # <data format="section"><section title="Result">
-            #   <key name="format" value="base64,crc=923B2C86,size=952"/>
-            key = data.find("section").find("key")
-            values = key.get("value").split(",")
-            self.dl_size = int(values[2].split("=")[1])
-            self.dl_crc = values[1].split("=")[1]
-        else:
-            # <data format="raw"><crc>439B852</crc><size>5096
-            self.dl_size = int(data.find("size").text)
-            self.dl_crc = data.find("crc").text
+        try:
+            if data.get("format") == "section":
+                # <data format="section"><section title="Result">
+                #   <key name="format" value="base64,crc=923B2C86,size=952"/>
+                key = data.find("section").find("key")
+                values = key.get("value").split(",")
+                self.dl_size = int(values[2].split("=")[1])
+                self.dl_crc = values[1].split("=")[1]
+            else:
+                # <data format="raw"><crc>439B852</crc><size>5096
+                self.dl_size = int(data.find("size").text)
+                self.dl_crc = data.find("crc").text
+        except (AttributeError, IndexError, TypeError, ValueError) as exception:
+            raise ServerError("Malformed answer: invalid download header") from exception
 
     def download(self, filename: str) -> Response:
         """Handle file download.
@@ -503,6 +527,11 @@ class SSLClient:
                     savefile.write(chunk)
                     size += len(chunk)
                     crc = snscrc.update_crc32(chunk, crc)
+        except requests.RequestException:
+            # RequestException derives from OSError: without this clause a
+            # transport failure would be reported as a local file error
+            self._unlink(partial)
+            raise
         except OSError as exception:
             self._unlink(partial)
             logger.error("%s", exception)
@@ -517,9 +546,9 @@ class SSLClient:
                     f"Download error: {size} bytes downloaded, expecting {self.dl_size} bytes"
                 )
 
-            crc = format(crc, "X")
-            if crc != self.dl_crc:
-                raise ServerError(f"Download error: crc {crc}, expecting {self.dl_crc}")
+            crc_hex = format(crc, "X")
+            if crc_hex != self.dl_crc:
+                raise ServerError(f"Download error: crc {crc_hex}, expecting {self.dl_crc}")
 
             os.replace(partial, filename)
         except BaseException:
@@ -532,7 +561,7 @@ class SSLClient:
             msg="OK",
             output='100 code=00a00100 msg="Ok"',
             xml='<?xml version="1.0" ?><nws code="100" msg="OK">'
-            '<serverd code="00a00100" msg="Ok" ret="100"/>',
+            '<serverd code="00a00100" msg="Ok" ret="100"/></nws>',
         )
 
     @staticmethod

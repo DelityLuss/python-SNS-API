@@ -21,17 +21,23 @@ CRC32_init = 0xFFFFFFFF
 _FINAL_XOR = 0xFFFFFFFF
 
 
-def compute_crc32(data: bytes) -> int:
-    """Return the SNS CRC32 value of ``data``."""
+def _tobytes(data: bytes | str) -> bytes:
+    """Encode ``data`` as UTF-8 when it is a ``str``."""
 
-    return zlib.crc32(data) ^ _FINAL_XOR
+    return data.encode("utf-8") if isinstance(data, str) else data
 
 
-def update_crc32(data: bytes, crc: int) -> int:
+def compute_crc32(data: bytes | str) -> int:
+    """Return the SNS CRC32 value of ``data``, a ``str`` being read as UTF-8."""
+
+    return zlib.crc32(_tobytes(data)) ^ _FINAL_XOR
+
+
+def update_crc32(data: bytes | str, crc: int) -> int:
     """Return ``crc`` updated with ``data``, for incremental hashing.
 
     ``crc`` must be a value previously returned by :func:`compute_crc32`,
     :func:`update_crc32`, or :data:`CRC32_init` to start a new computation.
     """
 
-    return zlib.crc32(data, crc ^ _FINAL_XOR) ^ _FINAL_XOR
+    return zlib.crc32(_tobytes(data), crc ^ _FINAL_XOR) ^ _FINAL_XOR

@@ -39,6 +39,34 @@ print(response)          # unchanged: __str__ still returns output
 print(repr(response))    # <Response ret=100 code=00a00100 msg='Ok'>
 ```
 
+### `sslverifyhost=False` no longer trusts the system authorities
+
+This is the one change that breaks *working* connections. An appliance reached
+with `sslverifyhost=False` **and** peer verification left on connected in 1.x
+whenever its certificate was signed by a publicly trusted CA — a common setup
+when the appliance is fronted by a corporate or commercial certificate. That
+worked by accident: the adapter's SSL context pulled in the system trust store
+on top of `cabundle` (see the CHANGELOG). 2.0 trusts `cabundle` and nothing else,
+so the same call now raises `SSLError`.
+
+Name the authorities you actually trust:
+
+```python
+import certifi
+
+# appliance certificate signed by a public CA
+client = SSLClient(host="fw", password="pass", sslverifyhost=False,
+                   cabundle=certifi.where())
+
+# appliance certificate signed by your own CA
+client = SSLClient(host="fw", password="pass", sslverifyhost=False,
+                   cabundle="/etc/ssl/private/company-ca.pem")
+```
+
+`snscli` takes the same file with `-C/--cabundle`. Callers already passing
+`sslverifypeer=False` (`snscli -k`) are unaffected, and so is the default
+factory-certificate setup, which the shipped bundle covers.
+
 ### `raw` answers keep their trailing newline
 
 1.x dropped the final `\n` of a `format="raw"` payload. If you compared
@@ -63,12 +91,18 @@ setting a TOTP, so they were already broken — they now need `--timeout`.
 
 | Removed | Replacement |
 |---|---|
-| `HostNameAdapter` | `SNSHTTPSAdapter(assert_hostname=False)` |
-| `DNSResolverHTTPSAdapter(cn, host)` | `SNSHTTPSAdapter(cn)` |
+| `HostNameAdapter` | `SNSHTTPSAdapter(assert_hostname=False, cafile=bundle)` |
+| `DNSResolverHTTPSAdapter(cn, host)` | `SNSHTTPSAdapter(cn, cafile=bundle)` |
 | `URLLIB3V2` | urllib3 2.x is always assumed |
 | `setup.py install` | `pip install .` |
 
 These were internal plumbing; the public entry point has always been `SSLClient`.
+
+Always pass `cafile` — the certificate authority bundle you mounted the session
+with, or `None` only when peer verification is disabled. The adapter builds its
+own SSL context, and leaving `cafile` out makes it fall back to the system trust
+store: your bundle would no longer be the only authority trusted, which is the
+widening 2.0 fixed.
 
 ## New things worth adopting
 

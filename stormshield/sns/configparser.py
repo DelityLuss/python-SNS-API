@@ -88,7 +88,12 @@ class ConfigParser:
             match = self.SECTION_RE.match(line)
             if match:
                 section = match.group(1)
-                self.data[section] = CaseInsensitiveDict() if self.format == "section" else []
+                # anything but list/section_line is parsed as token=value below,
+                # so the section must be a dict there too
+                if self.format in ("list", "section_line"):
+                    self.data[section] = []
+                else:
+                    self.data[section] = CaseInsensitiveDict()
                 continue
 
             if self.format == "list":
@@ -122,13 +127,19 @@ class ConfigParser:
     def _parse_pairs(cls, line: str) -> dict[str, str]:
         """Parse a ``token=value token2="value 2"`` line into a dict."""
 
-        # An odd number of quotes means the appliance sent a truncated line;
-        # skip it whole rather than returning half-parsed values.
+        # An odd number of quotes means the appliance sent a truncated line:
+        # keep the pairs that end before the unmatched quote rather than
+        # half-parsing the last value or dropping the whole row.
+        limit = len(line)
         if line.count('"') % 2:
             logger.warning("Can't parse line: `%s`, error: unbalanced quotes", line)
-            return {}
+            limit = line.rfind('"')
 
-        return {m.group("token"): unquote(m.group("value")) for m in cls._PAIR_RE.finditer(line)}
+        return {
+            m.group("token"): unquote(m.group("value"))
+            for m in cls._PAIR_RE.finditer(line)
+            if m.end() <= limit
+        }
 
     def get(
         self,

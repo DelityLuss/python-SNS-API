@@ -194,7 +194,7 @@ class Response:
         first = serverd_nodes[0]
         response = cls(
             code=first.get("code"),
-            ret=int(first.get("ret")),
+            ret=cls._ret(first),
             msg=first.get("msg"),
             xml=xml,
             tree=nws_node,
@@ -204,9 +204,18 @@ class Response:
             last = serverd_nodes[-1]
             response.code = last.get("code")
             response.msg = last.get("msg")
-            response.ret = int(last.get("ret"))
+            response.ret = cls._ret(last)
 
         return response
+
+    @staticmethod
+    def _ret(node: Et.Element) -> int:
+        """Read the ``ret`` attribute of a serverd node."""
+
+        ret = node.get("ret")
+        if ret is None:
+            raise ValueError("Malformed answer: serverd node without ret")
+        return int(ret)
 
     @classmethod
     def from_xml(cls, xml: str | bytes) -> Response:

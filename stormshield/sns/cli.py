@@ -13,7 +13,7 @@ import os
 import platform
 import re
 import sys
-from typing import Any
+from typing import Any, cast
 
 import defusedxml.minidom
 
@@ -90,6 +90,24 @@ class CommandFilter(logging.Filter):
         return record.levelname != "COMMAND"
 
 
+class SNSLogger(logging.Logger):
+    """Logger exposing the CLI's ``OUTPUT`` and ``COMMAND`` levels.
+
+    A subclass rather than methods bolted onto :class:`logging.Logger`, which
+    would leak the two levels into every logger of the host application.
+    """
+
+    def output(self, message: str, *args: Any, **kwargs: Any) -> None:
+        """Log a command answer."""
+
+        self._log(OUTPUT_LEVELV_NUM, message, args, **kwargs)
+
+    def command(self, message: str, *args: Any, **kwargs: Any) -> None:
+        """Log a command input."""
+
+        self._log(COMMAND_LEVELV_NUM, message, args, **kwargs)
+
+
 def make_completer():
     """Load completer for readline"""
 
@@ -121,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--proxy", help="Proxy URL (scheme://user:password@host:port)", default=None)
     group.add_argument(
         "--timeout",
-        help="Connection timeout in seconds (default: %(default)s, 0 to wait forever)",
+        help="Connection timeout in seconds (default: %(default)s, 0 or -1 to wait forever)",
         default=SSLClient.DEFAULT_TIMEOUT,
         type=float,
     )
@@ -189,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def setup_logging(args: argparse.Namespace) -> logging.Logger:
+def setup_logging(args: argparse.Namespace) -> SNSLogger:
     """Configure the root logger and the custom OUTPUT/COMMAND levels."""
 
     level = logging.INFO
@@ -203,43 +221,41 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
     logging.addLevelName(OUTPUT_LEVELV_NUM, "OUTPUT")
     logging.addLevelName(COMMAND_LEVELV_NUM, "COMMAND")
 
-    def logoutput(self, message, *args, **kwargs):
-        self._log(OUTPUT_LEVELV_NUM, message, args, **kwargs)
-
-    def logcommand(self, message, *args, **kwargs):
-        self._log(COMMAND_LEVELV_NUM, message, args, **kwargs)
-
-    logging.Logger.output = logoutput
-    logging.Logger.command = logcommand
-
-    logger = logging.getLogger()
-    for handler in list(logger.handlers):
-        logger.removeHandler(handler)
-    logger.setLevel(level)
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    root.setLevel(level)
 
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(CommandFilter())
     handler.setFormatter(_build_formatter())
-    logger.addHandler(handler)
+    root.addHandler(handler)
 
     if args.logfile is not None:
+        filehandler: logging.Handler
         if platform.system() != "Windows":
             filehandler = logging.handlers.WatchedFileHandler(args.logfile)
         else:
             filehandler = logging.FileHandler(args.logfile)
-        logger.addHandler(filehandler)
+        root.addHandler(filehandler)
 
-    return logger
+    # the CLI's own logger; its records propagate to the root handlers above
+    previous_class = logging.getLoggerClass()
+    logging.setLoggerClass(SNSLogger)
+    logger = logging.getLogger("snscli")
+    logging.setLoggerClass(previous_class)
+
+    return cast(SNSLogger, logger)
 
 
-def print_response(logger: logging.Logger, response, outputformat: str) -> None:
+def print_response(logger: SNSLogger, response, outputformat: str) -> None:
     if outputformat == "xml":
         logger.output(_highlight_xml(response.xml))
     else:
         logger.output(response.output)
 
 
-def run_script(logger: logging.Logger, client: SSLClient, path: str, outputformat: str) -> int:
+def run_script(logger: SNSLogger, client: SSLClient, path: str, outputformat: str) -> int:
     """Run a command script, returning the process exit code."""
 
     try:
@@ -289,7 +305,7 @@ def setup_readline() -> None:
     readline.set_completer(make_completer())
 
 
-def interactive(logger: logging.Logger, client: SSLClient, outputformat: str) -> int:
+def interactive(logger: SNSLogger, client: SSLClient, outputformat: str) -> int:
     """Run the interactive prompt, returning the process exit code."""
 
     setup_readline()
@@ -338,7 +354,9 @@ def interactive(logger: logging.Logger, client: SSLClient, outputformat: str) ->
 def connect(args: argparse.Namespace, password: str | None) -> SSLClient:
     """Connect to the appliance, prompting for a TOTP if the appliance asks for one."""
 
-    timeout = args.timeout if args.timeout else None
+    # 0 and the 1.x `-1` sentinel both mean "wait forever"; urllib3 rejects any
+    # non-positive timeout, so they must not be forwarded as is
+    timeout = args.timeout if args.timeout > 0 else None
     totp = args.totp
 
     # first try without totp, if needed ask for totp
