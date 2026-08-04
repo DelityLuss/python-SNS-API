@@ -379,6 +379,9 @@ class SSLClient:
         """Disconnect from the server. Calling it twice is a no-op."""
 
         if not self._connected:
+            # No session to log out of, but a connect() that failed after the
+            # TCP handshake still left a socket in the pool: release it.
+            self.session.close()
             return
         self._connected = False
 

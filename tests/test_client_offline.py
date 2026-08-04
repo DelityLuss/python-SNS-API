@@ -298,6 +298,18 @@ def test_disconnect_is_idempotent():
     assert client.session.get.call_count == 1
 
 
+def test_disconnect_releases_the_socket_of_a_failed_connect():
+    """A connect() that failed after the handshake still holds a socket."""
+
+    client = make_client()
+    assert client._connected is False
+
+    client.disconnect()
+
+    client.session.close.assert_called_once()
+    client.session.get.assert_not_called()  # no session to log out of
+
+
 def test_disconnect_survives_a_dead_connection():
     client = make_client()
     client._connected = True

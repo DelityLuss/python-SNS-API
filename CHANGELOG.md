@@ -118,7 +118,7 @@ Modernisation release. See [MIGRATION.md](MIGRATION.md) for the upgrade path.
 - `SNSCLI_PASSWORD` environment variable, so the password no longer has to
   appear in `ps` output via `-p`.
 - `--retries` option on `snscli`.
-- An offline test suite (155 tests) built on XML answers captured from a real
+- An offline test suite (156 tests) built on XML answers captured from a real
   appliance, and a locale-independent live suite behind the `live` marker.
 - `tox` environments for Python 3.10–3.13, plus a `live` environment and a
   `lint` environment running ruff and mypy.
