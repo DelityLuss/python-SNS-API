@@ -1,4 +1,15 @@
-# python-SNS-API
+<div align="center">
+
+<img src="https://avatars.githubusercontent.com/u/20141717?v=4" alt="Stormshield" width="90" height="90">
+
+# Stormshield Python Module
+
+[![PyPI version](https://img.shields.io/pypi/v/stormshield.sns.sslclient.svg)](https://pypi.org/project/stormshield.sns.sslclient/)
+[![Python versions](https://img.shields.io/pypi/pyversions/stormshield.sns.sslclient.svg)](https://pypi.org/project/stormshield.sns.sslclient/)
+[![License](https://img.shields.io/pypi/l/stormshield.sns.sslclient.svg)](LICENCE)
+[![Stormshield](https://img.shields.io/badge/Stormshield-Network%20Security-0057B8)](https://www.stormshield.com)
+
+</div>
 
 A Python client for the Stormshield Network Security appliance SSL API.
 
@@ -6,6 +17,23 @@ Requires **Python 3.10 or later** and **urllib3 2.x**.
 
 * What changed, and why: [CHANGELOG.md](CHANGELOG.md)
 * Upgrading from 1.x: [MIGRATION.md](MIGRATION.md)
+
+## Table of contents
+
+* [Install](#install)
+* [API usage](#api-usage)
+  * [Which CA bundle is used](#which-ca-bundle-is-used)
+  * [Command results](#command-results)
+  * [JSON](#json)
+  * [Paged answers](#paged-answers)
+  * [Error handling](#error-handling)
+  * [File upload/download](#file-uploaddownload)
+  * [Logging](#logging)
+* [snscli](#snscli)
+* [Proxy](#proxy)
+* [Build](#build)
+* [Tests](#tests)
+* [Links](#links)
 
 ## Install
 
@@ -50,7 +78,7 @@ and calling it twice is harmless.
 
 ### Which CA bundle is used
 
-`cabundle` is the **only** set of authorities trusted — it replaces the system
+`cabundle` is the **only** set of authorities trusted - it replaces the system
 trust store, it does not add to it. The bundle shipped with the library
 (`stormshield/sns/bundle.ca`) holds the two Stormshield roots that sign factory
 appliance certificates, and nothing else.
@@ -127,7 +155,7 @@ TypeError: Object of type CaseInsensitiveDict is not JSON serializable
 **Every value is a string.** The appliance answers in XML, where everything is
 a text attribute, so no type information ever reaches the client: `"modify": "1"`
 is the text `1`, not the integer, and `"global": "0"` is not a boolean. The
-library does not guess — converting is the caller's decision.
+library does not guess - converting is the caller's decision.
 
 The appliance itself has no JSON mode. `output=json` is rejected by some
 commands and silently ignored by others, which answer in their usual format;
@@ -160,8 +188,8 @@ while True:
 ```
 
 `send_command()` also logs a warning whenever rows were held back. `truncated`
-compares `offset + count` against `total` — `offset` is read from the command's
-`start=` argument — because past the last page the appliance still reports the
+compares `offset + count` against `total` - `offset` is read from the command's
+`start=` argument - because past the last page the appliance still reports the
 full `total` next to zero rows, and comparing `count` alone would never
 terminate.
 
